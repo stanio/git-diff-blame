@@ -18,7 +18,7 @@ sub parse_hunk_header {
 
 sub get_blame_prefix {
 	my ($line) = @_;
-	$line =~ /^(\^?[0-9a-f]+\s+(\S+\s+)?\([^\)]+\))/ or die "bad blame output: $line";
+	$line =~ /^(\^?[0-9a-f]+\s+(\S+\s+)?\([^\)]+\))/ or return '?????'; # die "bad blame output: $line";
 	return $1;
 }
 
@@ -27,12 +27,13 @@ $git_root =~ s/^\s+//;
 $git_root =~ s/\s+$//;
 chdir($git_root) or die "$!";
 
-my ($oldrev, $newrev) = @ARGV;
+my @diff_opts = ('-w');
+my ($oldrev, $newrev, @args) = @ARGV;
 $oldrev ||= 'HEAD';
 if ($newrev) {
-	open($diff, '-|', 'git', '--no-pager', 'diff', $oldrev, $newrev) or die;
+	open($diff, '-|', 'git', '--no-pager', 'diff', $oldrev, $newrev, @diff_opts, @args, ':!**/package-lock.json') or die;
 } else {
-	open($diff, '-|', 'git', '--no-pager', 'diff', $oldrev) or die;
+	open($diff, '-|', 'git', '--no-pager', 'diff', $oldrev, @diff_opts, @args, ':!**/package-lock.json') or die;
 }
 
 my $istty = -t STDOUT;
@@ -45,16 +46,18 @@ while (<$diff>) {
 	if (m{^diff --git a/(.*) b/(.*)$} || m{^diff --git ./(.*) ./(.*)$}) {
 		close $pre if defined $pre;
 		close $post if defined $post;
-		print;
+		print "\n";
 		$prefilename = "./" . $1;
 		$postfilename = "./" . $2;
 		$delete = $create = 0;
 	} elsif (m{^new file}) {
 		$create = 1;
 		$prefilename = '/dev/null';
+		print;
 	} elsif (m{^deleted file}) {
 		$delete = 1;
 		$postfilename = '/dev/null';
+		print;
 	} elsif (m{^--- $prefilename\t?$}) {
 		# ignore
 		print;
@@ -67,24 +70,32 @@ while (<$diff>) {
 		my $o_end = $o_ofs + $o_cnt - 1;
 		my $n_end = $n_ofs + $n_cnt - 1;
 		if (!$create) {
-			open($pre, '-|', 'git', 'blame', '-M', "-L$o_ofs,$o_end",
+			close $pre if defined $pre;
+			# print "blame -w --date=short -L$o_ofs,$o_end $oldrev -- $prefilename\n";
+			open($pre, '-|', 'git', '--no-pager', 'blame', @diff_opts, '--date=short', "-L$o_ofs,$o_end",
 			     $oldrev, '--', $prefilename) or die;
 		}
 		if (!$delete) {
+			close $post if defined $post;
 			if ($newrev) {
-				open($post, '-|', 'git', 'blame', '-M', "-L$n_ofs,$n_end",
+				# print "blame -w --date=short -L$n_ofs,$n_end $newrev -- $postfilename\n";
+				open($post, '-|', 'git', '--no-pager', 'blame', @diff_opts, '--date=short', "-L$n_ofs,$n_end",
 				     $newrev, '--', $postfilename) or die;
 			} else {
-				open($post, '-|', 'git', 'blame', '-M', "-L$n_ofs,$n_end",
+				# print "blame -w --date=short -L$n_ofs,$n_end -- $postfilename\n";
+				open($post, '-|', 'git', '--no-pager', 'blame', @diff_opts, '--date=short', "-L$n_ofs,$n_end",
 				     '--', $postfilename) or die;
 			}
 		}
+		print;
 	} elsif (m{^ }) {
-		print "    ", get_blame_prefix(scalar <$pre>), "\t", $_;
+		print "  ", get_blame_prefix(scalar <$pre>), "\t", $_;
 		scalar <$post>; # discard
 	} elsif (m{^\-}) {
-		print "${ANSI_RED} -  ", get_blame_prefix(scalar <$pre>), "\t", $_,"${ANSI_RST}";
+		print "${ANSI_RED}- ", get_blame_prefix(scalar <$pre>), "\t", $_,"${ANSI_RST}";
 	} elsif (m{^\+}) {
-		print "${ANSI_GRN} +  ", get_blame_prefix(scalar <$post>), "\t", $_,"${ANSI_RST}";
+		print "${ANSI_GRN}+ ", get_blame_prefix(scalar <$post>), "\t", $_,"${ANSI_RST}";
+	} else {
+		print;
 	}
 }
